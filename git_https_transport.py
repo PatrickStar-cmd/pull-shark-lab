@@ -1,6 +1,7 @@
 """Direct verified Git smart HTTPS for this repository, without a local proxy."""
 import base64
 import subprocess
+import time
 import urllib.request
 
 
@@ -53,8 +54,16 @@ class GitHTTPSTransport:
             headers["Content-Type"] = f"application/x-{service}-request"
             headers["Accept"] = f"application/x-{service}-result"
         request = urllib.request.Request(URL + path, data=data, headers=headers)
-        with self.client.open(request, timeout=60) as response:
-            return response.read()
+        attempts = 3 if path != "git-receive-pack" else 1
+        for attempt in range(attempts):
+            try:
+                with self.client.open(request, timeout=30) as response:
+                    return response.read()
+            except Exception as error:
+                if attempt + 1 < attempts:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise RuntimeError(f"Git HTTPS {path} ({len(data or b'')} bytes): {type(error).__name__}: {error}") from error
 
     def refs(self, service):
         advertisement = self.request("info/refs?service=" + service)
@@ -74,7 +83,11 @@ class GitHTTPSTransport:
         sha = refs[f"refs/heads/{branch}"]
         present = subprocess.run(["git", "cat-file", "-e", sha], capture_output=True).returncode == 0
         if not present:
-            request = packet(f"want {sha} side-band-64k ofs-delta\n".encode()) + b"0000" + packet(b"done\n")
+            request = packet(f"want {sha} side-band-64k ofs-delta\n".encode()) + b"0000"
+            known = subprocess.run(["git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}"], capture_output=True)
+            if known.returncode == 0:
+                request += packet(b"have " + known.stdout.strip() + b"\n")
+            request += packet(b"done\n")
             result = self.request("git-upload-pack", request, "git-upload-pack")
             pack = bytearray()
             for line in packets(result):
@@ -92,12 +105,17 @@ class GitHTTPSTransport:
     def push(self, branch):
         ref = f"refs/heads/{branch}"
         sha = local("rev-parse", ref).decode().strip()
-        old = self.refs("git-receive-pack").get(ref, ZERO)
+        remote_refs = self.refs("git-receive-pack")
+        old = remote_refs.get(ref, ZERO)
         if old != sha:
             revisions = sha + "\n"
             if old != ZERO:
                 local("merge-base", "--is-ancestor", old, sha)
                 revisions += "^" + old + "\n"
+            else:
+                common = remote_refs.get("refs/heads/main")
+                if common and subprocess.run(["git", "merge-base", "--is-ancestor", common, sha], capture_output=True).returncode == 0:
+                    revisions += "^" + common + "\n"
             pack = local("pack-objects", "--stdout", "--revs", data=revisions.encode())
             request = packet(f"{old} {sha} {ref}\0report-status side-band-64k ofs-delta\n".encode()) + b"0000" + pack
             response = self.request("git-receive-pack", request, "git-receive-pack")
