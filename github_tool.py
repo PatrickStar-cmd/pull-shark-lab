@@ -1,8 +1,16 @@
-"""Sequential gh-backed API adapter; no tokens or external services."""
+"""Sequential GitHub API adapter using the gh credential store."""
 import json
-import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
+
+
+class GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        if not newurl.startswith("https://api.github.com/"):
+            raise RuntimeError("Refusing a GitHub API redirect to another host")
+        return super().redirect_request(request, fp, code, message, headers, newurl)
 
 
 class GitHubTool:
@@ -12,40 +20,58 @@ class GitHubTool:
         self.max_retries = max_retries
         self.logger = logger
         self.last_write = 0.0
+        credential = subprocess.run(["gh", "auth", "token"], capture_output=True,
+                                    text=True, check=True)
+        self._credential = credential.stdout.strip()
+        if not self._credential:
+            raise RuntimeError("No GitHub credential available")
+        # The local proxy and gh's TLS client stalled during this run. Direct
+        # urllib HTTPS works and retains normal certificate verification.
+        self.client = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), GitHubRedirectHandler())
 
     def api(self, endpoint, method="GET", payload=None):
         for attempt in range(self.max_retries):
             if method != "GET":
                 time.sleep(max(0, 1.1 - (time.monotonic() - self.last_write)))
-            command = ["gh", "api", "--include", "--method", method, endpoint]
-            if payload is not None:
-                command += ["--input", "-"]
-            result = subprocess.run(
-                command, input=json.dumps(payload) if payload is not None else None,
-                capture_output=True, text=True, encoding="utf-8", timeout=120,
+            request = urllib.request.Request(
+                f"https://api.github.com/{endpoint}", method=method,
+                data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+                headers={"Authorization": "Bearer " + self._credential,
+                         "Accept": "application/vnd.github+json",
+                         "Content-Type": "application/json", "User-Agent": "Pull-Shark-Lab"},
             )
-            if method != "GET":
-                self.last_write = time.monotonic()
-            normalized = result.stdout.replace("\r\n", "\n")
-            headers, separator, body = normalized.partition("\n\n")
-            if result.returncode == 0:
-                return json.loads(body if separator else normalized)
-            error = result.stderr.strip()
-            lower = (body + error).lower()
-            if "rate limit" in lower or "http 429" in lower:
-                retry = re.search(r"(?im)^retry-after:\s*(\d+)", headers)
-                reset = re.search(r"(?im)^x-ratelimit-reset:\s*(\d+)", headers)
-                depleted = re.search(r"(?im)^x-ratelimit-remaining:\s*0\s*$", headers)
-                wait = int(retry.group(1)) if retry else 60 * (2 ** attempt)
+            try:
+                with self.client.open(request, timeout=30) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as error:
+                body = error.read().decode("utf-8", errors="replace")
+                headers = error.headers
+                status = error.code
+            except (OSError, urllib.error.URLError) as error:
+                if method == "GET" and attempt + 1 < self.max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                # A failed write may have reached GitHub. Resume reconciles the
+                # branch/PR state before repeating it instead of blindly retrying.
+                raise RuntimeError(f"GitHub {method} {endpoint}: {error}") from error
+            finally:
+                if method != "GET":
+                    self.last_write = time.monotonic()
+            if "rate limit" in body.lower() or status == 429:
+                retry = headers.get("Retry-After")
+                reset = headers.get("X-RateLimit-Reset")
+                depleted = headers.get("X-RateLimit-Remaining") == "0"
+                wait = int(retry) if retry else 60 * (2 ** attempt)
                 if depleted and reset:
-                    wait = max(wait, int(reset.group(1)) - time.time() + 2)
+                    wait = max(wait, int(reset) - time.time() + 2)
                 self.logger.warning("GitHub rate limit; waiting %.0f seconds", wait)
                 time.sleep(max(1, wait))
                 continue
-            if method == "GET" and ("http 5" in lower or result.returncode != 0) and attempt + 1 < self.max_retries:
+            if method == "GET" and status >= 500 and attempt + 1 < self.max_retries:
                 time.sleep(2 ** attempt)
                 continue
-            raise RuntimeError(f"GitHub {method} {endpoint}: {error or body}")
+            raise RuntimeError(f"GitHub {method} {endpoint}: HTTP {status}: {body}")
         raise RuntimeError(f"GitHub rate-limit retries exhausted: {endpoint}")
 
     def find_pr(self, head):

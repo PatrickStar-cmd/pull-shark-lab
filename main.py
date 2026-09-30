@@ -53,9 +53,9 @@ def main():
     logger = setup_logger()
     git = GitManager(config["base_branch"], config["max_retries"], logger)
     gh = GitHubTool(config["repository"], config["base_branch"], config["max_retries"], logger)
-    expected_remote = f"https://github.com/{config['repository']}.git"
+    expected_remote = f"https://github.com/{config['repository']}"
     remote = git.run(["git", "remote", "get-url", "origin"], check_internet=False).stdout.strip()
-    if remote.removesuffix(".git") != expected_remote.removesuffix(".git"):
+    if (remote[:-4] if remote.endswith(".git") else remote) != expected_remote:
         raise RuntimeError(f"Unexpected origin: {remote}")
     if git.run(["git", "status", "--porcelain"], check_internet=False).stdout.strip():
         raise RuntimeError("Commit or stash tracked changes before running")

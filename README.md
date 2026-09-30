@@ -15,6 +15,8 @@ wrapper are adapted for this lab.
 - Sequential execution with a 5-second pause between PRs and a pause between
   API writes. Rate-limit responses trigger backoff, without rotating identities.
 - Uses the existing `gh` credential store. No token files or token printing.
+- GitHub API requests use Python HTTPS directly with certificate verification;
+  no third-party proxy is used for authenticated API traffic.
 - No third-party telemetry, dashboard registration, free proxies or webhooks.
 - Progress is saved locally in ignored `state.json`; a pending PR is reconciled
   when the same command is restarted.
