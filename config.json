@@ -1,0 +1,12 @@
+{
+  "repo_path": ".",
+  "repository": "PatrickStar-cmd/pull-shark-lab",
+  "base_branch": "main",
+  "readme_file": "CONTRIBUTIONS.md",
+  "pr_count": 128,
+  "delay_seconds": 5,
+  "auto_merge": true,
+  "dry_run": false,
+  "max_retries": 5,
+  "use_free_proxies": false
+}

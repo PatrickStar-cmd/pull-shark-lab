@@ -1,0 +1,13 @@
+.tools/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+github_tokens.json
+state.json
+state.json.*
+*.log
+STOP
+pr-body-*.txt
