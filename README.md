@@ -26,6 +26,12 @@ wrapper are adapted for this lab.
 Requires Python 3.8+, Git and an authenticated GitHub CLI. No Python packages
 need to be installed for this adapted sequential runner.
 
+If the local proxy or Git TLS client stalls, set
+`$env:PULL_SHARK_GIT_DIRECT_HTTPS = '1'` before running. The optional
+`git_https_transport.py` uses Git's official smart HTTPS protocol directly
+through Python, with certificate verification and credentials held in memory.
+It is restricted to this repository and retains normal commits and branches.
+
 ```powershell
 gh auth status
 python main.py --dry-run

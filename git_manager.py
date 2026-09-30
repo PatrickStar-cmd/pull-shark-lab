@@ -29,6 +29,9 @@ class GitManager:
                 raise Exception("No internet connection")
 
             try:
+                if os.getenv("PULL_SHARK_GIT_DIRECT_HTTPS") == "1" and command[0] == "git" and command[1] in ("fetch", "pull", "push"):
+                    from git_https_transport import GitHTTPSTransport
+                    return GitHTTPSTransport().run(command)
                 result = subprocess.run(
                     command,
                     capture_output=True,
